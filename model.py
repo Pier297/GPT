@@ -43,8 +43,8 @@ class Block(nn.Module):
             nn.Dropout(config.dropout),
         )
 
-    def forward(self, x, mask):
-        x = x + self.attn(self.ln_1(x), self.ln_1(x), self.ln_1(x), key_padding_mask=mask)[0]
+    def forward(self, x, key_padding_mask, attn_mask):
+        x = x + self.attn(self.ln_1(x), self.ln_1(x), self.ln_1(x), key_padding_mask=key_padding_mask, attn_mask=attn_mask)[0]
         x = x + self.mlp(self.ln_2(x))
         return x
 
@@ -85,10 +85,30 @@ class GPT(nn.Module):
         elif isinstance(module, nn.Embedding):
             torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
 
-    def forward(self, x, mask, targets=None) -> Tuple[torch.Tensor, torch.Tensor]:
-        x = self.tok_emb(x) + self.pos_emb(torch.arange(x.shape[1], device=x.device)) # N, L, E
+    def forward(self, x, key_padding_mask, targets=None) -> Tuple[torch.Tensor, torch.Tensor]:
+        '''
+        Args:
+        x: input ids, shape: (N, L)
+        key_padding_mask: shape: (N, L), boolean mask where True indicates padding
+        (Optional) targets: shape: (N, L), if provided, will return loss
+        '''
+        L = x.shape[1] # seq length
+        # need to mask out attention to future tokens, so that the model does not cheat
+        # we create a mask that has 0s in the lower triangle, and 1s everywhere else, we then make it boolean
+        attn_mask = torch.triu(torch.ones(L, L), diagonal=1).bool().to(x.device)
+        # This basically construct a matrix as follows:
+        # [
+        #   [False, True, ..., True],
+        #   [False, False, ..., True],
+        #   ...
+        #   [False, False, ..., True],
+        # ]
+        # a value of False means that the model is allowed to attend to that position, and True means it is not allowed to attend to that position
+
+        x = self.tok_emb(x) + self.pos_emb(torch.arange(L, device=x.device)) # N, L, E
+        
         for blk in self.blocks:
-            x = blk(x, mask)
+            x = blk(x, key_padding_mask=key_padding_mask, attn_mask=attn_mask)
         x = self.ln_f(x)
         logits = self.head(x)
 
